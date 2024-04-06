@@ -16,7 +16,6 @@
 #include <iostream>
 #include <sstream>
 #include <random>
-
 #ifdef __AVX2__
 #include <immintrin.h>
 #endif
@@ -68,12 +67,13 @@ constexpr int __builtin_ctzll(uint64_t x) {
 }
 #endif
 
-constexpr unsigned longest_run_uint64_t(uint64_t x) {
+constexpr std::pair<unsigned,unsigned> longest_run_pos_uint64_t(uint64_t x){
+    // returns (length of run, zeros left of leftmost bit in run)
   if(x == 0)
-    return 0;
+    return std::make_pair(0,0);
 
   if(x == ~0ULL)
-    return 64;
+    return std::make_pair(64,0);
 
   std::array<uint64_t, 6> pow2runs = {0};
   for (unsigned n = 0; n < 6; n++) {
@@ -99,25 +99,49 @@ constexpr unsigned longest_run_uint64_t(uint64_t x) {
       x = y;
     }
   }
-
-  return count;
+  return std::make_pair(count, __builtin_clzll(x));
 }
 
-constexpr unsigned populated_width_uint64_t(uint64_t x) {
-  if (x == 0)
-    return 0;
+
+constexpr std::pair<unsigned, unsigned> populated_width_pos_uint64_t(uint64_t x) {
+  // returns (length of populated width, position of trailing end of populated width)
+  // position here measured from right.
+  if (x == 0ULL)
+    return std::make_pair(0,0);
+  if (x == ~0ULL)
+    return std::make_pair(64,0);
 
   // First, shift to try and make it 2^n-1
   int lzeroes = __builtin_ctzll(x);
-  x = __builtin_rotateright64(x, lzeroes);
-  int tones = __builtin_clzll(~x);
-  x = __builtin_rotateleft64(x, tones);
+  uint64_t z = __builtin_rotateright64(x, lzeroes);
+  int tones = __builtin_clzll(~z);
+  z = __builtin_rotateleft64(z, tones);
 
-  if ((x & (x + 1)) == 0)
-    return __builtin_ctzll(~x);
+  if ((z & (z + 1ULL)) == 0ULL){
+    if (x & (1ULL << 63)) // wrap-around
+      return std::make_pair(__builtin_ctzll(~z), 64 - __builtin_clzll(~x));
+    else
+      return std::make_pair(__builtin_ctzll(~z), __builtin_ctzll(x));
+  }
 
   // Otherwise do the long way
-  return 64 - longest_run_uint64_t(~x);
+  auto emptyRun = longest_run_pos_uint64_t(~x);
+  return std::make_pair(64-emptyRun.first, 64-emptyRun.second);
+}
+
+// a sort of 1D pattern matching; returns the flag for the n's
+// such that populated width of x is contained in rotate_left((1 << d) - 1, n)
+constexpr uint64_t valid_shifts(uint64_t x, unsigned d){
+  auto popWidthPos = populated_width_pos_uint64_t(x);
+  if (popWidthPos.first > d)
+    return 0ULL;
+  unsigned minShift = (64 + popWidthPos.first+popWidthPos.second - d) % 64;
+  unsigned maxShift = popWidthPos.second;
+  if (minShift > maxShift)
+    maxShift += 64;
+  uint64_t res = __builtin_rotateleft64((1ULL << (maxShift+1-minShift))-1ULL, minShift);
+  assert(__builtin_ctzll(res) == minShift || __builtin_clzll(~res)+minShift == 64);
+  return res;
 }
 
 constexpr unsigned longest_run_uint32_t(uint32_t x) {
@@ -171,6 +195,7 @@ constexpr unsigned populated_width_uint32_t(uint32_t x) {
   return 32 - longest_run_uint32_t(~x);
 }
 
+
 constexpr uint64_t convolve_uint64_t(uint64_t x, uint64_t y) {
   if(y == 0)
     return 0;
@@ -182,6 +207,22 @@ constexpr uint64_t convolve_uint64_t(uint64_t x, uint64_t y) {
     x &= ~(((uint64_t)1) << lsb);
   }
   return result;
+}
+
+constexpr uint64_t convolve_with_ones(uint64_t x, unsigned d){
+  // returns the convolution of x with (1 << d) - 1
+  assert(d < 64);
+  if (!d)
+    return 0ULL;
+  uint64_t shift = x;
+  uint64_t res = 0ULL;
+  for (unsigned expOfTwo = 1; expOfTwo != 64; expOfTwo *= 2){
+    if (d & expOfTwo)
+      res |= __builtin_rotateleft64(shift, d & ~(2*expOfTwo-1));
+    shift |= __builtin_rotateleft64(shift, expOfTwo);
+  }
+  assert(res == convolve_uint64_t(x, (1ULL << d)-1ULL));
+  return res;
 }
 
 namespace PRNG {
@@ -1209,14 +1250,14 @@ public:
 
     uint64_t cols = PopulatedColumns();
 #if N == 64
-    unsigned width = populated_width_uint64_t(cols);
+    unsigned width = populated_width_pos_uint64_t(cols).first;
 #elif N == 32
     unsigned width = populated_width_uint32_t((uint32_t)cols);
 #else
 #error "WidthHeight cannot handle N"
 #endif
 
-    unsigned height = populated_width_uint64_t(orOfCols);
+    unsigned height = populated_width_pos_uint64_t(orOfCols).first;
 
     return {width, height};
   }
@@ -1243,6 +1284,50 @@ public:
                                     bounds[1] - remainingheight,
                                     bounds[2] + remainingwidth,
                                     bounds[3] + remainingheight);
+  }
+
+
+  LifeState PseudoBufferAround(std::pair<int,int> size) const {
+  #if N == 64
+    int w = size.first, h = size.second;
+    uint64_t nonzeroCols = 0;
+    for(unsigned i = 0; i < N; ++i)
+      if (state[i])
+        nonzeroCols |= 1ULL << i;
+    if (nonzeroCols == 0ULL)
+      return ~LifeState();
+    if (populated_width_pos_uint64_t(nonzeroCols).first > w)
+      return LifeState();
+
+    uint64_t temp[128] = {0};
+    uint64_t validColsFlag = convolve_with_ones(valid_shifts(nonzeroCols, w), w);
+    for (unsigned i = 0; i < N; ++i){
+      if (state[i]){
+        temp[i] = valid_shifts(state[i], h);
+        if (!temp[i]) // too tall: populated width of col > h.
+          return LifeState();
+      } else if (__builtin_rotateright64(validColsFlag, i) & 1ULL)
+        temp[i] = ~0ULL;
+    }
+    std::copy(temp, temp+64, temp+64);
+    // valid shifts from one column to the next differ by at most 1
+    // propagate info left-to-right once, then right-to-left once
+    // [doubled array due to wraparound]
+    for (unsigned i = 0; i < 2*N-1; ++i)
+      if (__builtin_rotateright64(validColsFlag,i) & 1ULL)
+        temp[i+1] &= __builtin_rotateright64(temp[i],1) | temp[i] | __builtin_rotateleft64(temp[i],1);
+    for (unsigned i = 2*N; i > 0; --i)
+      if (__builtin_rotateright64(validColsFlag,i) & 1ULL)
+        temp[i-1] &= __builtin_rotateright64(temp[i],1) | temp[i] | __builtin_rotateleft64(temp[i],1);
+    // convolve each col with 2^h-1 to get our pseudo buffer.
+    LifeState res;
+    for(unsigned i = 0; i < N; ++i)
+      if (validColsFlag >> i & 1)
+        res.state[i] = convolve_with_ones(temp[i], h);
+    return res;
+  #else
+  #error "PseudoBufferAround cannot handle N = " N
+  #endif
   }
 
   std::pair<int, int> CenterPoint() {

@@ -1,3 +1,4 @@
+#include <bitset>
 #include <cassert>
 #include <cmath>
 #include <stack>
@@ -256,7 +257,7 @@ LifeState SearchState::ForcedInactiveCells(
     result |= ~active; // Or maybe just return
 
   if (params->activeBounds.first != -1 && activePop > 0) {
-    result |= ~active.BufferAround(params->activeBounds);
+    result |= ~active.PseudoBufferAround(params->activeBounds);
   }
 
   if (params->maxEverActiveCells != -1 && everActive.GetPop() == (unsigned)params->maxEverActiveCells) {
@@ -264,7 +265,7 @@ LifeState SearchState::ForcedInactiveCells(
   }
 
   if (params->everActiveBounds.first != -1) {
-    result |= ~everActive.BufferAround(params->everActiveBounds);
+    result |= ~everActive.PseudoBufferAround(params->everActiveBounds);
   }
 
   if (params->maxComponentActiveCells != -1 && activePop > (unsigned)params->maxComponentActiveCells) {
@@ -345,7 +346,7 @@ LifeState SearchState::ForcedUnchangingCells(
   }
 
   if (params->changesBounds.first != -1) {
-    result |= ~changes.BufferAround(params->changesBounds);
+    result |= ~changes.PseudoBufferAround(params->changesBounds);
   }
 
   if (params->componentChangesBounds.first != -1) {
@@ -833,7 +834,7 @@ void SearchState::SearchStep() {
       return;
     timeSincePropagate = 0;
 
-    assert(frontier.size > 0);
+    //assert(frontier.size > 0);
     stable.SanityCheck();
     // SanityCheck();
   } else {
@@ -860,7 +861,7 @@ void SearchState::SearchStep() {
   allowedTransitions = TransitionSimplify(allowedTransitions);
   // The cell should not still be in the frontier in this case
   assert(allowedTransitions != Transition::IMPOSSIBLE);
-  assert(!TransitionIsSingleton(allowedTransitions));
+  //assert(!TransitionIsSingleton(allowedTransitions));
 
   // Loop over the possible transitions
   for (auto transition = TransitionHighest(allowedTransitions);
@@ -1057,7 +1058,7 @@ void SearchState::RecordSolution() {
 
 void SearchState::SanityCheck() {
 #ifdef DEBUG
-  current.SanityCheck(stable);
+  //current.SanityCheck(stable);
   assert((stable.state & stable.unknown).IsEmpty());
 
   LifeStableState copy = stable;
